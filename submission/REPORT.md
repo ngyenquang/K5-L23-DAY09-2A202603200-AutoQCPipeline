@@ -40,10 +40,25 @@ Trong 80 ảnh đó người duyệt xử lý chủ yếu lỗi ngữ nghĩa n�
 3. **Nhãn sai mà model lớn cũng nhận định giống**: `second_opinion` chỉ so với yolo26l, nên nếu cả nhãn máy lẫn model cùng nhầm (ví dụ car/truck) thì không có cờ nào (chưa đo được trên raw vì không có đáp án).
 
 ## 5. Train: raw vs clean (tùy chọn, chấm riêng)
-**Chưa chạy.** Lý do: dành thời gian cho 4 module, calibration và phân tích; bản xuất hiện là bản nháp Hold nên chưa phát hành.
+Train trên Colab T4: `yolo26n`, 20 epoch, imgsz 640, 2 seed (0, 1), cùng val (`gold_val`, 40 ảnh) và test (100 ảnh). `clean` là **bản nháp Hold** (chưa phát hành). Nguồn: `submission/results/comparison.md`.
+
+| biến thể | #ảnh train | seed | mAP50 (TB ± độ lệch) | mAP50-95 | precision | recall |
+|---|---:|---:|---|---|---|---|
+| raw | 224 | 2 | 0,726 ± 0,000 | 0,512 ± 0,004 | 0,764 ± 0,061 | 0,649 ± 0,028 |
+| clean | 203 | 2 | 0,699 ± 0,025 | 0,486 ± 0,013 | 0,796 ± 0,050 | 0,596 ± 0,049 |
+
+Chênh mAP50 (clean − raw) = **−0,027**, xấp xỉ **một độ lệch chuẩn giữa các seed của clean** (0,025; riêng 2 seed của clean cách nhau 0,035: 0,681 và 0,716). **Chưa kết luận được** rằng clean tốt hơn hay kém hơn raw: chênh nằm trong nhiễu của 2 seed, test chỉ 100 ảnh. Độ lệch 0,000 của raw chỉ là hai seed tình cờ trùng nhau (0,7256 và 0,7259), không chứng minh raw ổn định.
+Theo lớp (AP50 trung bình 2 seed, raw → clean): car 0,738 → 0,741; person 0,823 → 0,824; bus 0,695 → 0,695; **truck 0,648 → 0,536**. Toàn bộ chênh lệch đến từ lớp truck, nhưng trên test truck chỉ có 24 box và hai seed của clean cho truck 0,484 và 0,588 (cách nhau 0,10, bằng cỡ chênh raw−clean 0,11), nên chênh này cũng nằm trong nhiễu.
+
+Giả thuyết và cách kiểm:
+1. **Nhiễu của lớp ít mẫu**: truck chỉ có 24 box test và 41 box train trong clean (32 trong raw). Kiểm bằng cách train thêm ≥ 3 seed và xem khoảng chồng lấn của AP truck.
+2. **Rò rỉ test làm raw được lợi**: `raw` còn 5 ảnh `LEAK_TEST` trùng ảnh test (và các bản trùng gần). `clean` đã loại chúng, nên điểm `raw` có thể bị thổi phồng. Kiểm bằng cách train `raw` sau khi bỏ riêng 5 ảnh đó, so với `raw` gốc.
+3. **Nhãn máy còn lại trong clean**: còn 38/203 ảnh có cảnh báo chưa duyệt (chủ yếu `LOOSE_BOX` và `FALSE_POS`), nên clean chưa phải "dữ liệu sạch" tuyệt đối. Kiểm bằng `oracle` (nhãn người, cùng ảnh): nếu oracle cao hơn clean rõ rệt thì nhãn còn sót đang kéo điểm xuống.
+Việc tiếp theo: thêm seed, chạy `oracle`, và xem lại cảnh báo của Ultralytics ở bước train `raw` để biết số ảnh `raw` thật sự được dùng.
 
 ## 6. Quyết định và ghi chú AI
 (a) **Quyết định cuối: Hold.** Để thành Release cần ≤ 20/203 ảnh còn cảnh báo (hiện 38), tức người duyệt thêm ít nhất 18 ảnh có cảnh báo (nếu mỗi ảnh được duyệt xong thì cảnh báo của nó coi như xử lý), nghĩa là mở rộng ngân sách duyệt vượt 80 ảnh hoặc giảm bớt cờ giả của `FALSE_POS` (precision 0,31 trên calib). Không hạ `conf` chỉ để hàng đợi vừa, vì như vậy là Release giả do checker bỏ sót.
+
 (b) **Có dùng AI** (Claude Code) để viết 4 module theo docstring và test.
 - Prompt chính: đưa đề, docstring và test của từng module, yêu cầu viết `label_format`, `gate`, `autofix`, `second_opinion` không viết cứng ngưỡng.
 - Cách kiểm: chạy `pytest` (79 passed), tự chạy `autofix` trên file nhãn thử có dòng trống và dòng dính 2 lỗi, chạy pipeline và đối chiếu từng cặp ảnh bị loại bằng mắt.
