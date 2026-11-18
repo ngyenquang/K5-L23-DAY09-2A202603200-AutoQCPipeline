@@ -40,5 +40,56 @@ from ..model_cache import get_preds  # noqa: F401
 
 
 def run(ds, cfg, preds=None):
-    # TODO
-    raise NotImplementedError("check second_opinion chưa làm")
+    c = cfg["second_opinion"]
+    if preds is None:
+        preds = get_preds(ds, cfg, "checker")
+    issues = []
+
+    def flag(code, stem, msg, line=None, **extra):
+        issues.append(Issue("second_opinion", WARN, code, stem, msg, line=line, extra=extra))
+
+    for img in ds.image_files():
+        stem = img.stem
+        lines = ds.read_label_lines(stem)
+        if stem not in preds or lines is None:
+            continue                                   # không có dự đoán hoặc chưa có file nhãn
+        size = ds.image_size(stem)
+        if size is None:
+            continue                                   # ảnh hỏng: việc của check `images`
+        W, H = size
+
+        # nhãn hợp lệ, GIỮ số dòng gốc (valid_boxes không giữ số dòng)
+        labels = []                                    # (số dòng, (cls, cx, cy, w, h))
+        for ln, text in lines:
+            try:
+                b = parse_yolo_line(text)
+            except ValueError:
+                continue
+            if 0 <= b[0] < len(ds.classes):
+                labels.append((ln, b))
+
+        # dự đoán đủ tin cậy và đủ lớn
+        P = [p for p in preds[stem] if p[1] >= c["conf"] and p[4] * W * p[5] * H >= c["min_area_px"]]
+        for cls, conf, cx, cy, w, h in P:
+            box = (cx, cy, w, h)
+            cands = [(iou_xywh(box, b[1:]), b[0]) for _, b in labels]
+            cands = [(iou, lc) for iou, lc in cands if iou >= c["iou_missing"]]
+            if not cands:
+                flag("POSSIBLE_MISSING", stem, "model thấy vật mà nhãn không có box", conf=conf)
+                continue
+            same = [iou for iou, lc in cands if lc == cls]
+            if same:
+                if max(same) < c["iou_loose"]:
+                    flag("POSSIBLE_LOOSE_BOX", stem, "đúng vật, box lỏng/lệch", iou=round(max(same), 3), conf=conf)
+                continue                               # nhãn cùng lớp đã phủ vật này
+            other = max(iou for iou, lc in cands)
+            if other >= c["iou_match"]:
+                flag("POSSIBLE_WRONG_CLASS", stem, "model thấy lớp khác ở đúng vị trí này", iou=round(other, 3), conf=conf)
+            # còn lại: mơ hồ -> không cờ
+
+        # box nhãn không khớp vật nào model thấy (không lọc diện tích)
+        allp = [p for p in preds[stem] if p[1] >= c["fp_conf"]]
+        for ln, b in labels:
+            if all(iou_xywh(b[1:], p[2:6]) < c["iou_missing"] for p in allp):
+                flag("POSSIBLE_FALSE_POS", stem, "box nhãn không khớp vật nào model thấy", line=ln)
+    return issues
